@@ -78,7 +78,12 @@ if(!$PrepareOnly){
   & $gh release create $tag @assets --repo $Repository --draft --target main --title ('VS'+$Protocol+' / Internal Alpha') --notes-file $bodyPath
   if($LASTEXITCODE -ne 0){throw 'Draft release upload failed; no release promoted.'}
  }
- $remote=(& $gh api ('repos/'+$Repository+'/releases/tags/'+$tag) |Out-String)|ConvertFrom-Json
+ # Draft tags may not exist as Git refs yet; query the authenticated release list.
+ $releases=(& $gh api ('repos/'+$Repository+'/releases?per_page=100') |Out-String)|ConvertFrom-Json
+ if($LASTEXITCODE -ne 0){throw 'Could not verify draft release metadata.'}
+ $candidates=@($releases|Where-Object tag_name -ceq $tag)
+ if($candidates.Count -ne 1 -or !$candidates[0].draft){throw 'The expected draft release did not verify.'}
+ $remote=$candidates[0]
  foreach($asset in $result.assets){
   $match=@($remote.assets|Where-Object name -ceq $asset.name)
   if($match.Count -ne 1 -or [long]$match[0].size -ne [long]$asset.size_bytes){throw 'Draft asset inventory did not verify; no release promoted.'}
