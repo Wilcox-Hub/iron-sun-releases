@@ -1,0 +1,7 @@
+build/
+test-output/
+*.key
+*.pfx
+*.user
+*.log
+.vs/

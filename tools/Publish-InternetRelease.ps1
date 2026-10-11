@@ -1,0 +1,94 @@
+param(
+ [Parameter(Mandatory)][string]$PackageRoot,
+ [Parameter(Mandatory)][string]$ArtifactManifest,
+ [Parameter(Mandatory)][string]$LocalFeed,
+ [Parameter(Mandatory)][ValidateRange(58,10000)][int]$Protocol,
+ [string]$Repository='Wilcox-Hub/iron-sun-releases',
+ [string]$ServerAlias='sidequest',
+ [string]$ReleaseNotes='Private co-op server. Two weapon slots. Arena collision reliability.',
+ [switch]$PrepareOnly
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference='Stop'
+Add-Type -AssemblyName System.Security
+$sourceRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$gh='C:/Program Files/GitHub CLI/gh.exe'
+if($Repository -cne 'Wilcox-Hub/iron-sun-releases'){throw 'This publisher is scoped to the IRON SUN release repository.'}
+$package=[IO.Path]::GetFullPath($PackageRoot)
+$info=Get-Content -LiteralPath (Join-Path $package 'PackageInfo.json') -Raw|ConvertFrom-Json
+if($info.Status -cne 'COMPLETE' -or $info.Configuration -cne 'Shipping'){throw 'Only a complete tested Shipping package may be published.'}
+$proof=Get-Content -LiteralPath $ArtifactManifest -Raw|ConvertFrom-Json
+$windows=Join-Path $package 'Windows'
+if([IO.Path]::GetFullPath($proof.archive_absolute_path) -ine [IO.Path]::GetFullPath($windows) -or [int]$proof.protocol -ne $Protocol){throw 'Package proof identifies a different build.'}
+$files=@(Get-ChildItem -LiteralPath $windows -Recurse -File)
+if($files.Count -ne @($proof.artifacts).Count){throw 'Package inventory differs from its tested evidence.'}
+foreach($item in $proof.artifacts){
+ $path=Join-Path $windows $item.path
+ if(!(Test-Path -LiteralPath $path) -or (Get-Item -LiteralPath $path).Length -ne [long]$item.size_bytes -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $item.sha256){throw ('Tested artifact changed: '+$item.path)}
+}
+$serverText=& 'C:/Windows/System32/OpenSSH/ssh.exe' -T -oBatchMode=yes -oClearAllForwardings=yes -oConnectTimeout=8 -oStrictHostKeyChecking=yes $ServerAlias 'cat /home/caiden/iron-sun-server/current/IronSunServer.json'
+if($LASTEXITCODE -ne 0){throw 'Could not verify the live native server build.'}
+$server=($serverText -join "`n")|ConvertFrom-Json
+if([int]$server.protocol -ne $Protocol -or $server.engine -cne '5.8.3' -or $server.target -cne 'Server'){throw 'Deploy and test the matching native server before promoting this client release.'}
+$version=Split-Path $package -Leaf
+$manifest=Get-Content -LiteralPath (Join-Path $LocalFeed ('manifest-'+$version+'.json')) -Raw|ConvertFrom-Json
+if($manifest.version -cne $version){throw 'Local feed does not identify this tested package.'}
+$game=Join-Path $LocalFeed $manifest.archive
+if((Get-Item -LiteralPath $game).Length -ne [long]$manifest.archive_size -or (Get-FileHash -LiteralPath $game -Algorithm SHA256).Hash -ne $manifest.archive_sha256){throw 'Game archive differs from the local verified feed.'}
+$launcher=Join-Path $sourceRoot 'build/IronSunLauncher.exe'
+if(!(Test-Path -LiteralPath $launcher)){throw 'Build and test the launcher first.'}
+# Preserve semantic version components; AssemblyFileVersion includes four parts.
+$parts=[Diagnostics.FileVersionInfo]::GetVersionInfo($launcher).FileVersion.Split('.')
+$launcherVersion=($parts[0..2]-join '.')
+$tag='playtest-vs'+$Protocol+'-'+$version
+$output=Join-Path $sourceRoot ('build/releases/'+$tag)
+[IO.Directory]::CreateDirectory($output)|Out-Null
+$base='https://github.com/'+$Repository+'/releases/download/'+$tag+'/'
+$manifest|Add-Member -NotePropertyName protocol -NotePropertyValue $Protocol -Force
+$manifest|Add-Member -NotePropertyName archive_url -NotePropertyValue ($base+$manifest.archive) -Force
+$manifest|Add-Member -NotePropertyName release_notes -NotePropertyValue $ReleaseNotes -Force
+$keyPath=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'IRON SUN Publishing/release-signing.key'
+$rsa=New-Object Security.Cryptography.RSACryptoServiceProvider
+$rsa.PersistKeyInCsp=$false
+try {
+ $plain=[Security.Cryptography.ProtectedData]::Unprotect([IO.File]::ReadAllBytes($keyPath),$null,[Security.Cryptography.DataProtectionScope]::CurrentUser)
+ $rsa.FromXmlString([Text.Encoding]::UTF8.GetString($plain));[Array]::Clear($plain,0,$plain.Length)
+ if($rsa.ToXmlString($false) -cne [IO.File]::ReadAllText((Join-Path $sourceRoot 'src/ReleasePublicKey.xml'))){throw 'Publisher signing identity differs from the embedded launcher key.'}
+ function Write-Signed([string]$Name,$Data) {
+  $bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Data|ConvertTo-Json -Depth 12))
+  [IO.File]::WriteAllBytes((Join-Path $output ($Name+'.json')),$bytes)
+  [IO.File]::WriteAllBytes((Join-Path $output ($Name+'.sig')),$rsa.SignData($bytes,'SHA256'))
+ }
+ Write-Signed 'game-manifest' $manifest
+ $launchManifest=[ordered]@{schema_version=1;app_id='IRON-SUN-LAUNCHER';version=$launcherVersion;url=($base+'IronSunLauncher.exe');size_bytes=(Get-Item -LiteralPath $launcher).Length;sha256=(Get-FileHash -LiteralPath $launcher -Algorithm SHA256).Hash}
+ Write-Signed 'launcher-manifest' $launchManifest
+} finally {$rsa.Dispose()}
+$body="IRON SUN internal alpha / VS$Protocol`n`n$ReleaseNotes`n`nDownload IronSunLauncher.exe once. It installs the full game and checks signed updates automatically. The game server invite is shared privately by your host.`n`nWindows x64. Launcher $launcherVersion. First launcher has no commercial Authenticode certificate.`n`nThis is a tested internal prototype, not beta approval. Different-Wi-Fi human combat and recovery acceptance remain open."
+$bodyPath=Join-Path $output 'release-notes.md';[IO.File]::WriteAllText($bodyPath,$body,[Text.UTF8Encoding]::new($false))
+$assets=@($game,$launcher,(Join-Path $output 'game-manifest.json'),(Join-Path $output 'game-manifest.sig'),(Join-Path $output 'launcher-manifest.json'),(Join-Path $output 'launcher-manifest.sig'))
+$result=[ordered]@{prepared=$true;published=$false;repository=$Repository;tag=$tag;protocol=$Protocol;game_version=$version;launcher_version=$launcherVersion;assets=@($assets|ForEach-Object {@{name=(Split-Path $_ -Leaf);path=$_;size_bytes=(Get-Item -LiteralPath $_).Length;sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash}})}
+if(!$PrepareOnly){
+ $existing=& $gh release view $tag --repo $Repository --json isDraft,tagName 2>$null
+ if($LASTEXITCODE -eq 0){
+  $state=($existing -join "`n")|ConvertFrom-Json
+  if(!$state.isDraft){throw 'This immutable release is already published. Use a new tested game build ID.'}
+  $remoteNames=& $gh release view $tag --repo $Repository --json assets --jq '.assets[].name'
+  foreach($asset in $assets){if((Split-Path $asset -Leaf) -notin @($remoteNames)){& $gh release upload $tag $asset --repo $Repository;if($LASTEXITCODE -ne 0){throw 'Draft upload failed; no release promoted.'}}}
+ } else {
+  & $gh release create $tag @assets --repo $Repository --draft --target main --title ('VS'+$Protocol+' / Internal Alpha') --notes-file $bodyPath
+  if($LASTEXITCODE -ne 0){throw 'Draft release upload failed; no release promoted.'}
+ }
+ $remote=(& $gh api ('repos/'+$Repository+'/releases/tags/'+$tag) |Out-String)|ConvertFrom-Json
+ foreach($asset in $result.assets){
+  $match=@($remote.assets|Where-Object name -ceq $asset.name)
+  if($match.Count -ne 1 -or [long]$match[0].size -ne [long]$asset.size_bytes){throw 'Draft asset inventory did not verify; no release promoted.'}
+  # GitHub supplies a SHA256 digest for newly uploaded release assets.
+  if(!$match[0].PSObject.Properties['digest'] -or $match[0].digest -cne ('sha256:'+$asset.sha256.ToLowerInvariant())){throw 'Remote asset digest did not verify; no release promoted.'}
+ }
+ & $gh release edit $tag --repo $Repository --draft=false --latest
+ if($LASTEXITCODE -ne 0){throw 'Release promotion could not be confirmed.'}
+ $result.published=$true
+ $result.url='https://github.com/'+$Repository+'/releases/tag/'+$tag
+}
+$result|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $output 'publication-result.json') -Encoding UTF8
+$result|ConvertTo-Json -Depth 8
