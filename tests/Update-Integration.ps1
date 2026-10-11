@@ -32,11 +32,16 @@ function Write-Fixture($Manifest) {
  [IO.File]::WriteAllBytes((Join-Path $fixture 'game-manifest.sig'),$rsa.SignData($bytes,'SHA256'))
 }
 function Invoke-TestEngine([string]$Action='Update',[string]$Root=$root) {
- $lines=& (Join-Path $env:WINDIR 'System32/WindowsPowerShell/v1.0/powershell.exe') -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $tools 'InternetUpdate.ps1') -InstallRoot $Root -Action $Action -FixtureRoot $fixture -PublicKeyPath $pub
- $code=$LASTEXITCODE
- $items=@($lines|Where-Object {$_ -like 'IRON_SUN_EVENT *'}|ForEach-Object {$_.Substring(15)|ConvertFrom-Json})
- $final=$items|Where-Object type -eq result|Select-Object -Last 1
- return @{code=$code;items=$items;result=$(if($final){$final.data}else{$null});errors=@($items|Where-Object type -eq error)}
+ $exe=Join-Path $PSScriptRoot '../build/IronSunLauncher.exe'
+ $id=[Guid]::NewGuid().ToString('N')
+ $out=Join-Path $run ($id+'.out');$err=Join-Path $run ($id+'.err')
+ $args='--install-root "'+$Root+'" --fixture-feed "'+$fixture+'" --test-key "'+$pub+'" --update-test '+$Action
+ $p=Start-Process -FilePath $exe -ArgumentList $args -WindowStyle Hidden -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+ if(!$p.WaitForExit(30000)){throw 'Native updater timed out'}
+ $code=$p.ExitCode
+ $data=$null
+ if($code -eq 0){$data=[IO.File]::ReadAllText($out)|ConvertFrom-Json}
+ return @{code=$code;result=$data;errors=[IO.File]::ReadAllText($err)}
 }
 function Pass([string]$Name,[bool]$Condition) {if(!$Condition){throw ('FAILED: '+$Name)};$results.Add(@{name=$Name;passed=$true})}
 function Version-In([string]$Folder){return (Get-Content (Join-Path $Folder 'installed.json') -Raw|ConvertFrom-Json).version}
@@ -71,7 +76,7 @@ try {
  $interrupt=Join-Path $run 'interrupted';$install=Invoke-TestEngine 'Update' $interrupt
  Move-Item -LiteralPath (Join-Path $interrupt 'Game') -Destination (Join-Path $interrupt 'Previous')
  $recover=Invoke-TestEngine 'Update' $interrupt;Pass 'Interrupted directory swap recovers verified install' ($recover.code -eq 0 -and (Version-In (Join-Path $interrupt 'Game')) -eq 'fixture-v3')
- $output=@{passed=$true;checks=$results.ToArray();run=$run;scope='Actual Windows PowerShell 5.1 production internet-update driver with RSA-signed local fixtures. No live HTTPS or game execution.'}
+ $output=@{passed=$true;checks=$results.ToArray();run=$run;scope='Actual compiled native C# production internet updater with RSA-signed local fixtures. No live HTTPS or game execution.'}
  $output|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $run 'result.json') -Encoding UTF8
  $output|ConvertTo-Json -Depth 8
 } finally {$rsa.Dispose()}

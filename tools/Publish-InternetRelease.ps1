@@ -40,7 +40,7 @@ if(!(Test-Path -LiteralPath $launcher)){throw 'Build and test the launcher first
 # Preserve semantic version components; AssemblyFileVersion includes four parts.
 $parts=[Diagnostics.FileVersionInfo]::GetVersionInfo($launcher).FileVersion.Split('.')
 $launcherVersion=($parts[0..2]-join '.')
-$tag='playtest-vs'+$Protocol+'-'+$version
+$tag='playtest-vs'+$Protocol+'-'+$version+'-launcher-'+$launcherVersion
 $output=Join-Path $sourceRoot ('build/releases/'+$tag)
 [IO.Directory]::CreateDirectory($output)|Out-Null
 $base='https://github.com/'+$Repository+'/releases/download/'+$tag+'/'
@@ -71,7 +71,7 @@ if(!$PrepareOnly){
  $existing=& $gh release view $tag --repo $Repository --json isDraft,tagName 2>$null
  if($LASTEXITCODE -eq 0){
   $state=($existing -join "`n")|ConvertFrom-Json
-  if(!$state.isDraft){throw 'This immutable release is already published. Use a new tested game build ID.'}
+  if(!$state.isDraft){throw 'This immutable release is already published. Use a new tested game build ID or launcher version.'}
   $remoteNames=& $gh release view $tag --repo $Repository --json assets --jq '.assets[].name'
   foreach($asset in $assets){if((Split-Path $asset -Leaf) -notin @($remoteNames)){& $gh release upload $tag $asset --repo $Repository;if($LASTEXITCODE -ne 0){throw 'Draft upload failed; no release promoted.'}}}
  } else {

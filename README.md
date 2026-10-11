@@ -17,14 +17,28 @@ The first launcher is not Authenticode signed; Windows may show an unknown-publi
 ./tests/Update-Integration.ps1
 ```
 
-Targets Windows x64 with the system .NET Framework/WPF and Windows PowerShell 5.1. No third-party runtime or package restore is required. The updater reuses the established `RidgefireUpdate.psm1` installation/swap/rollback core, with an HTTPS/signed-metadata layer.
+Targets Windows x64 with the system .NET Framework/WPF. The distributed application uses native C# for HTTPS, signature verification, downloads, ZIP extraction, install swaps, repair, rollback and its own updates. It does not embed or execute PowerShell. PowerShell is used only for the owner's build, tests and publisher tools. No third-party runtime or package restore is required.
+
+Run `./tests/Launcher-SelfUpdate.ps1` to validate replacement and reopening with a signed fixture. This owner-only test uses the existing protected publishing identity; it does not publish the fixture version.
 
 ## Publish a tested game
 
-`tools/Publish-InternetRelease.ps1` requires a COMPLETE Shipping package, its recorded artifact hashes, the approved local feed, and the native server's matching protocol. It verifies every player artifact, signs the game/launcher release manifests, uploads immutable assets to a GitHub draft, confirms remote asset sizes/hashes, and publishes only when all assets are present. The stable latest-release links update together. An ordinary source commit does not publish a game or alter the native server.
+`tools/Publish-InternetRelease.ps1` requires a COMPLETE Shipping package, its recorded artifact hashes, the approved local feed, and the native server's matching protocol. It verifies every player artifact, signs the game/launcher release manifests, uploads immutable assets to a GitHub draft, confirms remote asset sizes/hashes, and publishes only when all assets are present. The stable latest-release links update together. An ordinary source commit does not publish a game or alter the native server. Launcher-only releases use a new launcher version and can reuse the verified game package; tags include both identities.
+
+```powershell
+./tools/Publish-InternetRelease.ps1 `
+  -PackageRoot 'C:/Users/YaYa/Documents/Codex/2026-09-22/connect-this-github-repo-to-a/unreal/Ridgefire/Saved/Packages/20261011-120705-452' `
+  -ArtifactManifest 'C:/Users/YaYa/Documents/ChatGPT/FPS-1/research/lenovo-specs/server-access/vs58-package-artifacts.json' `
+  -LocalFeed 'C:/Users/YaYa/Documents/ChatGPT/FPS-1/distribution/IRON-SUN-LAN' `
+  -Protocol 58
+```
+
+For a new game release, replace these inputs with the new tested package and its proof, and deploy its matching server first. For a launcher change, increment the launcher version and assembly versions, run both test scripts, commit/push the exact source and then publish. `-PrepareOnly` prepares signed local metadata without uploading or promoting anything. Published tags are immutable. Drafts interrupted during upload can be resumed.
 
 The owner private release-signing key is DPAPI-protected under `%LOCALAPPDATA%/IRON SUN Publishing`, outside this repository. Keep a separately protected owner backup before moving development machines. Only `src/ReleasePublicKey.xml` is shipped. Do not create a new signing identity for an ordinary update.
 
 ## Validation boundaries
 
-`tests/Update-Integration.ps1` drives the real Windows PowerShell update engine with RSA-signed local fixtures, covering install/current/update, repair, rollback/hold, unsigned metadata, malicious paths, corrupted downloads, foreign folders, saved-progress preservation and interrupted swaps. Live hosted download/install and actual game launch are recorded separately in the game checkout's dated beta-readiness snapshots. Website/native rendering, same-PC smoke, physical PCs and human gameplay remain distinct evidence levels.
+`tests/Update-Integration.ps1` drives the actual compiled native C# updater with RSA-signed local fixtures, covering install/current/update, repair, rollback/hold, unsigned metadata, malicious paths, corrupted downloads, foreign folders, saved-progress preservation and interrupted swaps. Live hosted download/install and actual game launch are recorded separately in the game checkout's dated beta-readiness snapshots. Website/native rendering, same-PC smoke, physical PCs and human gameplay remain distinct evidence levels.
+
+The initial 1.0.0 download was blocked by Defender (`Trojan:Win32/Sabsik.TE.A!ml`) before execution and its release was withdrawn to draft. Version 1.0.1 replaces its embedded script updater with the native implementation. Never disable endpoint protection or add exclusions to install a release. A successful test on the development PC does not guarantee every friend's antivirus or organizational policy will accept an unsigned application.

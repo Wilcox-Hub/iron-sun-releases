@@ -25,12 +25,12 @@ using System.Windows.Threading;
 [assembly: AssemblyDescription("Install, update, and play IRON SUN")]
 [assembly: AssemblyCompany("Wilcox-Hub")]
 [assembly: AssemblyProduct("IRON SUN")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.0.1.0")]
+[assembly: AssemblyFileVersion("1.0.1.0")]
 
 namespace IronSun {
  static class Settings {
-  public const string LauncherVersion="1.0.0";
+  public const string LauncherVersion="1.0.1";
   public const string ReleaseBase="https://github.com/Wilcox-Hub/iron-sun-releases/releases/latest/download/";
   public const string Website="https://iron-sun-playtest.wilcoxwarrior4577.chatgpt.site";
   public static readonly JavaScriptSerializer Json=new JavaScriptSerializer { MaxJsonLength=16777216 };
@@ -38,6 +38,7 @@ namespace IronSun {
   public static string Fixture="";
   public static string TestKey="";
   public static string LauncherTestFeed="";
+  public static bool NoShortcut;
   public static string Support {get{return System.IO.Path.Combine(Root,"Launcher","Support",LauncherVersion);}}
   public static byte[] Resource(string name) {
    using(var s=Assembly.GetExecutingAssembly().GetManifestResourceStream(name)) {
@@ -46,7 +47,6 @@ namespace IronSun {
    }
   }
   public static string Quote(string value) {return "\""+value.Replace("\"","\\\"")+"\"";}
-  public static string PsQuote(string value) {return "'"+value.Replace("'","''")+"'";}
   public static string Hash(byte[] b) {using(var h=SHA256.Create())return BitConverter.ToString(h.ComputeHash(b)).Replace("-","");}
   public static string HashFile(string p) {using(var s=File.OpenRead(p))using(var h=SHA256.Create())return BitConverter.ToString(h.ComputeHash(s)).Replace("-","");}
   public static string GetString(IDictionary<string,object> data,string key,string fallback="") {object v;return data.TryGetValue(key,out v)&&v!=null?Convert.ToString(v,CultureInfo.InvariantCulture):fallback;}
@@ -80,10 +80,13 @@ namespace IronSun {
     for(int i=0;i<args.Length;i++) {
      if(args[i]=="--install-root"&&i+1<args.Length)Settings.Root=args[++i];
      else if(args[i]=="--fixture-feed"&&i+1<args.Length)Settings.Fixture=args[++i];
+     else if(args[i]=="--no-shortcut")Settings.NoShortcut=true;
      else if(args[i]=="--test-key"&&i+1<args.Length)Settings.TestKey=args[++i];
      else if(args[i]=="--self-update-test"&&i+1<args.Length)Settings.LauncherTestFeed=args[++i];
     }
     Settings.EnsureRoot();
+    if(args.Contains("--finish-self-update"))return NativeSelfUpdate.Finish(args);
+    if(!String.IsNullOrEmpty(Settings.TestKey)&&String.IsNullOrEmpty(Settings.Fixture))throw new IOException("Test keys require a local fixture feed.");
     bool created;
     var name="Local\\IronSunLauncher-"+Settings.Hash(Encoding.UTF8.GetBytes(Settings.Root.ToUpperInvariant())).Substring(0,24);
     using(var mutex=new Mutex(true,name,out created)) {
@@ -112,15 +115,6 @@ namespace IronSun {
   }
   static void Prepare() {
    Settings.EnsurePlain(Settings.Support);Directory.CreateDirectory(Settings.Support);
-   foreach(var file in new[]{"RidgefireUpdate.psm1","InternetFeed.psm1","InternetUpdate.ps1","ReleasePublicKey.xml"}) {
-    string destination=System.IO.Path.Combine(Settings.Support,file);Settings.EnsurePlain(destination);
-    var bytes=Settings.Resource(file);
-    if(!File.Exists(destination)||Settings.HashFile(destination)!=Settings.Hash(bytes))File.WriteAllBytes(destination,bytes);
-   }
-   if(!String.IsNullOrEmpty(Settings.TestKey)) {
-    if(String.IsNullOrEmpty(Settings.Fixture))throw new IOException("Test keys require a local fixture feed.");
-    File.Copy(Settings.TestKey,System.IO.Path.Combine(Settings.Support,"ReleasePublicKey.xml"),true);
-   }
    string launcher=System.IO.Path.Combine(Settings.Root,"Launcher","IronSunLauncher.exe");
    Settings.EnsurePlain(launcher);
    string source=Assembly.GetExecutingAssembly().Location;
@@ -133,7 +127,7 @@ namespace IronSun {
     }
     File.Copy(source,launcher,true);
    }
-   if(String.IsNullOrEmpty(Settings.Fixture))InstallShortcut(launcher);
+   if(String.IsNullOrEmpty(Settings.Fixture)&&!Settings.NoShortcut)InstallShortcut(launcher);
   }
   static void InstallShortcut(string launcher) {
    string path=System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),"IRON SUN.lnk");
@@ -156,71 +150,11 @@ namespace IronSun {
     System.Runtime.InteropServices.Marshal.FinalReleaseComObject(shell);
    }
   }
-  public static async Task<Dictionary<string,object>> RunEngine(string action,Action<Dictionary<string,object>> onEvent) {
-   string ps=System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"System32","WindowsPowerShell","v1.0","powershell.exe");
-   string arguments="-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "+Settings.Quote(System.IO.Path.Combine(Settings.Support,"InternetUpdate.ps1"))+" -InstallRoot "+Settings.Quote(Settings.Root)+" -Action "+action;
-   if(!String.IsNullOrEmpty(Settings.Fixture))arguments+=" -FixtureRoot "+Settings.Quote(Settings.Fixture);
-   var start=new ProcessStartInfo(ps,arguments){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true,StandardOutputEncoding=Encoding.UTF8,StandardErrorEncoding=Encoding.UTF8};
-   start.EnvironmentVariables["PSModulePath"]=System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"System32","WindowsPowerShell","v1.0","Modules");
-   using(var process=new Process()){process.StartInfo=start;process.Start();
-    Dictionary<string,object> result=null;string error=null;
-    var stderr=process.StandardError.ReadToEndAsync();
-    string line;
-    while((line=await process.StandardOutput.ReadLineAsync())!=null) {
-     if(!line.StartsWith("IRON_SUN_EVENT ",StringComparison.Ordinal))continue;
-     var item=Settings.Json.Deserialize<Dictionary<string,object>>(line.Substring(15));
-     string kind=Settings.GetString(item,"type");
-     if(kind=="result")result=(Dictionary<string,object>)item["data"];
-     if(kind=="error")error=Settings.GetString(item,"message");
-     if(onEvent!=null)onEvent(item);
-    }
-    await Task.Run(()=>process.WaitForExit());string diagnostic=await stderr;
-    if(process.ExitCode!=0||result==null)throw new IOException(error??(!String.IsNullOrWhiteSpace(diagnostic)?diagnostic.Trim():"The update did not finish. Your installed game was preserved."));
-    return result;
-   }
+  public static Task<Dictionary<string,object>> RunEngine(string action,Action<Dictionary<string,object>> onEvent) {
+   return Task.Run(()=>NativeInstaller.Run(action,onEvent));
   }
-  public static async Task<bool> UpdateLauncher() {
-   if(!String.IsNullOrEmpty(Settings.Fixture)&&String.IsNullOrEmpty(Settings.LauncherTestFeed))return false;
-   ServicePointManager.SecurityProtocol=SecurityProtocolType.Tls12;
-   using(var client=new HttpClient()){client.Timeout=TimeSpan.FromSeconds(20);client.DefaultRequestHeaders.UserAgent.ParseAdd("IronSunLauncher/1.0");
-    byte[] bytes,signature;
-    try {
-     if(!String.IsNullOrEmpty(Settings.LauncherTestFeed)){bytes=File.ReadAllBytes(System.IO.Path.Combine(Settings.LauncherTestFeed,"launcher-manifest.json"));signature=File.ReadAllBytes(System.IO.Path.Combine(Settings.LauncherTestFeed,"launcher-manifest.sig"));}
-     else {bytes=await client.GetByteArrayAsync(Settings.ReleaseBase+"launcher-manifest.json");signature=await client.GetByteArrayAsync(Settings.ReleaseBase+"launcher-manifest.sig");}
-    }
-    catch(HttpRequestException){return false;}catch(TaskCanceledException){return false;}
-    if(bytes.Length>65536||signature.Length>1024)throw new IOException("Launcher release metadata is too large.");
-    using(var rsa=new RSACryptoServiceProvider()){rsa.PersistKeyInCsp=false;rsa.FromXmlString(Encoding.UTF8.GetString(Settings.Resource("ReleasePublicKey.xml")));if(!rsa.VerifyData(bytes,"SHA256",signature))throw new IOException("Launcher release signature is invalid.");}
-    var data=Settings.Json.Deserialize<Dictionary<string,object>>(Encoding.UTF8.GetString(bytes));
-    if(Settings.GetString(data,"app_id")!="IRON-SUN-LAUNCHER")throw new IOException("Invalid launcher release.");
-    Version next;
-    if(!Version.TryParse(Settings.GetString(data,"version"),out next))throw new IOException("Invalid launcher version.");
-    if(next<=new Version(Settings.LauncherVersion))return false;
-    var url=new Uri(Settings.GetString(data,"url"));long size=Convert.ToInt64(data["size_bytes"]);
-    if(url.Scheme!="https"||url.UserInfo.Length!=0||size<1||size>33554432)throw new IOException("Invalid launcher download.");
-    var content=!String.IsNullOrEmpty(Settings.LauncherTestFeed)?File.ReadAllBytes(System.IO.Path.Combine(Settings.LauncherTestFeed,"IronSunLauncher.exe")):await client.GetByteArrayAsync(url);
-    if(content.LongLength!=size||Settings.Hash(content)!=Settings.GetString(data,"sha256").ToUpperInvariant())throw new IOException("Launcher download failed verification.");
-    string folder=System.IO.Path.Combine(Settings.Root,"Launcher");Settings.EnsurePlain(folder);
-    string pending=System.IO.Path.Combine(folder,"IronSunLauncher.pending.exe");Settings.EnsurePlain(pending);File.WriteAllBytes(pending,content);
-    string target=System.IO.Path.Combine(folder,"IronSunLauncher.exe");string backup=System.IO.Path.Combine(folder,"IronSunLauncher.previous.exe");
-    string script=System.IO.Path.Combine(folder,"Apply-LauncherUpdate.ps1");Settings.EnsurePlain(script);Settings.EnsurePlain(target);Settings.EnsurePlain(backup);
-    string childArgs="--install-root "+Settings.Quote(Settings.Root);
-    if(!String.IsNullOrEmpty(Settings.LauncherTestFeed))childArgs+=" --fixture-feed "+Settings.Quote(Settings.LauncherTestFeed)+" --ui-snapshot "+Settings.Quote(System.IO.Path.Combine(folder,"updated-launcher.png"));
-    string update="$ErrorActionPreference='Stop'\n$p=Get-Process -Id "+Process.GetCurrentProcess().Id+" -ErrorAction SilentlyContinue\nif($p){$p.WaitForExit()}\nStart-Sleep -Milliseconds 500\n$pending="+Settings.PsQuote(pending)+"\n$target="+Settings.PsQuote(target)+"\n$backup="+Settings.PsQuote(backup)+"\nif((Get-FileHash -LiteralPath $pending -Algorithm SHA256).Hash -cne "+Settings.PsQuote(Settings.GetString(data,"sha256").ToUpperInvariant())+"){throw 'Launcher changed after verification'}\n[IO.File]::Replace($pending,$target,$backup)\n@{status='APPLIED';version="+Settings.PsQuote(next.ToString())+";sha256=(Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash}|ConvertTo-Json|Set-Content -LiteralPath "+Settings.PsQuote(System.IO.Path.Combine(folder,"launcher-update-result.json"))+" -Encoding UTF8\nStart-Process -FilePath $target -ArgumentList "+Settings.PsQuote(childArgs)+" -WindowStyle "+(!String.IsNullOrEmpty(Settings.LauncherTestFeed)?"Hidden":"Normal")+"\n";
-    string ready=System.IO.Path.Combine(folder,"launcher-update-ready.txt");Settings.EnsurePlain(ready);if(File.Exists(ready))File.Delete(ready);
-    string errorLog=System.IO.Path.Combine(folder,"launcher-update-error.txt");Settings.EnsurePlain(errorLog);
-    update="trap { $_|Out-String|Set-Content -LiteralPath "+Settings.PsQuote(errorLog)+";exit 1 }\nSet-Content -LiteralPath "+Settings.PsQuote(ready)+" -Value 'READY'\n"+update;
-    File.WriteAllText(script,update,new UTF8Encoding(false));
-    string ps=System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"System32","WindowsPowerShell","v1.0","powershell.exe");
-    var helperStart=new ProcessStartInfo(ps,"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "+Settings.Quote(script)){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=folder};
-    helperStart.EnvironmentVariables["PSModulePath"]=System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"System32","WindowsPowerShell","v1.0","Modules");
-    Process.Start(helperStart);
-    // Let the helper initialize before this process closes its inherited handles.
-    for(int i=0;i<50&&!File.Exists(ready);i++)await Task.Delay(100);
-    if(!File.Exists(ready))throw new IOException("The launcher update helper could not start. Reopen the launcher to retry.");
-    return true;
-   }
-  }
+  public static Task<bool> UpdateLauncher() {return NativeSelfUpdate.Update();}
+
  }
 
  class LauncherWindow:Window {
@@ -273,7 +207,7 @@ namespace IronSun {
    Loaded+=async(s,e)=>{
     if(TestSnapshot!=null){status.Text="Ready to install the latest playtest.";version.Text="Latest game: PLAYTEST / VS58";notes.Text="Private co-op server\nTwo weapon slots\nArena collision reliability";primary.Content="Install IRON SUN";await Task.Delay(350);Snapshot(TestSnapshot);Close();return;}
     busy=true;SetButtons();
-    try {status.Text="Checking launcher updates...";if(await Program.UpdateLauncher()){Application.Current.Shutdown();return;}}
+    try {status.Text="Checking launcher updates...";if(await Program.UpdateLauncher()){busy=false;Application.Current.Shutdown();return;}}
     catch(Exception ex){status.Text=ex.Message;busy=false;SetButtons();return;}
     busy=false;RefreshInstalled();await Operate(installed?"Update":"Check");
    };
