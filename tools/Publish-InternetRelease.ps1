@@ -6,7 +6,8 @@ param(
  [string]$Repository='Wilcox-Hub/iron-sun-releases',
  [string]$ServerAlias='sidequest',
  [string]$ReleaseNotes='Private co-op server. Two weapon slots. Arena collision reliability.',
- [switch]$PrepareOnly
+ [switch]$PrepareOnly,
+ [switch]$GameOnly
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -36,11 +37,11 @@ if($manifest.version -cne $version){throw 'Local feed does not identify this tes
 $game=Join-Path $LocalFeed $manifest.archive
 if((Get-Item -LiteralPath $game).Length -ne [long]$manifest.archive_size -or (Get-FileHash -LiteralPath $game -Algorithm SHA256).Hash -ne $manifest.archive_sha256){throw 'Game archive differs from the local verified feed.'}
 $launcher=Join-Path $sourceRoot 'build/IronSunLauncher.exe'
-if(!(Test-Path -LiteralPath $launcher)){throw 'Build and test the launcher first.'}
+if(!$GameOnly -and !(Test-Path -LiteralPath $launcher)){throw 'Build and test the launcher first.'}
 # Preserve semantic version components; AssemblyFileVersion includes four parts.
-$parts=[Diagnostics.FileVersionInfo]::GetVersionInfo($launcher).FileVersion.Split('.')
-$launcherVersion=($parts[0..2]-join '.')
-$tag='playtest-vs'+$Protocol+'-'+$version+'-launcher-'+$launcherVersion
+$launcherVersion=$null
+if(!$GameOnly){$parts=[Diagnostics.FileVersionInfo]::GetVersionInfo($launcher).FileVersion.Split('.');$launcherVersion=($parts[0..2]-join '.')}
+$tag='playtest-vs'+$Protocol+'-'+$version+$(if($GameOnly){'-game'}else{'-launcher-'+$launcherVersion})
 $output=Join-Path $sourceRoot ('build/releases/'+$tag)
 [IO.Directory]::CreateDirectory($output)|Out-Null
 $base='https://github.com/'+$Repository+'/releases/download/'+$tag+'/'
@@ -60,13 +61,17 @@ try {
   [IO.File]::WriteAllBytes((Join-Path $output ($Name+'.sig')),$rsa.SignData($bytes,'SHA256'))
  }
  Write-Signed 'game-manifest' $manifest
- $launchManifest=[ordered]@{schema_version=1;app_id='IRON-SUN-LAUNCHER';version=$launcherVersion;url=($base+'IronSunLauncher.exe');size_bytes=(Get-Item -LiteralPath $launcher).Length;sha256=(Get-FileHash -LiteralPath $launcher -Algorithm SHA256).Hash}
- Write-Signed 'launcher-manifest' $launchManifest
+ if(!$GameOnly){
+  $launchManifest=[ordered]@{schema_version=1;app_id='IRON-SUN-LAUNCHER';version=$launcherVersion;url=($base+'IronSunLauncher.exe');size_bytes=(Get-Item -LiteralPath $launcher).Length;sha256=(Get-FileHash -LiteralPath $launcher -Algorithm SHA256).Hash}
+  Write-Signed 'launcher-manifest' $launchManifest
+ }
 } finally {$rsa.Dispose()}
 $body="IRON SUN internal alpha / VS$Protocol`n`n$ReleaseNotes`n`nDownload IronSunLauncher.exe once. It installs the full game and checks signed updates automatically. The game server invite is shared privately by your host.`n`nWindows x64. Launcher $launcherVersion. First launcher has no commercial Authenticode certificate.`n`nThis is a tested internal prototype, not beta approval. Different-Wi-Fi human combat and recovery acceptance remain open."
+if($GameOnly){$body="IRON SUN internal alpha / VS$Protocol`n`n$ReleaseNotes`n`nTemporary manual game download. Extract the COMPLETE ZIP, then run Windows/TP_FirstPerson.exe. Do not move the EXE out of its folder. Updates are manual for this download.`n`nThe custom launcher is withheld because Windows Defender blocked it. Do not disable protection or add exclusions to install it. It will only return after security review and a successful normal download/install check.`n`nThe game server invite is shared privately by your host. This is an internal prototype, not beta approval; different-Wi-Fi human combat and recovery acceptance remain open."}
 $bodyPath=Join-Path $output 'release-notes.md';[IO.File]::WriteAllText($bodyPath,$body,[Text.UTF8Encoding]::new($false))
-$assets=@($game,$launcher,(Join-Path $output 'game-manifest.json'),(Join-Path $output 'game-manifest.sig'),(Join-Path $output 'launcher-manifest.json'),(Join-Path $output 'launcher-manifest.sig'))
-$result=[ordered]@{prepared=$true;published=$false;repository=$Repository;tag=$tag;protocol=$Protocol;game_version=$version;launcher_version=$launcherVersion;assets=@($assets|ForEach-Object {@{name=(Split-Path $_ -Leaf);path=$_;size_bytes=(Get-Item -LiteralPath $_).Length;sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash}})}
+$assets=@($game,(Join-Path $output 'game-manifest.json'),(Join-Path $output 'game-manifest.sig'))
+if(!$GameOnly){$assets+=@($launcher,(Join-Path $output 'launcher-manifest.json'),(Join-Path $output 'launcher-manifest.sig'))}
+$result=[ordered]@{prepared=$true;published=$false;mode=$(if($GameOnly){'manual-game-only'}else{'automatic-launcher'});repository=$Repository;tag=$tag;protocol=$Protocol;game_version=$version;launcher_version=$launcherVersion;assets=@($assets|ForEach-Object {@{name=(Split-Path $_ -Leaf);path=$_;size_bytes=(Get-Item -LiteralPath $_).Length;sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash}})}
 if(!$PrepareOnly){
  $existing=& $gh release view $tag --repo $Repository --json isDraft,tagName 2>$null
  if($LASTEXITCODE -eq 0){
