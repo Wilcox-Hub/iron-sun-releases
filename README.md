@@ -1,10 +1,12 @@
 # IRON SUN Launcher
 
-Windows launcher for the IRON SUN internal playtest. A small per-user application installs the complete game, checks signed releases over HTTPS, preserves saves, and offers repair/rollback. Launcher updates are signed and applied after the old launcher exits. No game-server invite, GitHub token, or private signing key is distributed.
+Windows launcher for the IRON SUN internal playtest. A small per-user application installs the complete game, checks RSA-signed release metadata over HTTPS, preserves saves, and offers repair/rollback. Launcher updates are verified against that metadata and applied after the old launcher exits. This updater signature is separate from Windows Authenticode publisher signing. No game-server invite, GitHub token, or private signing key is distributed.
 
 Download page: https://iron-sun-playtest.wilcoxwarrior4577.chatgpt.site
 
 **Release status: internal-alpha setup accepted for publication.** Microsoft’s analyst removed the detection for the exact native 1.0.1 launcher. The portal’s final field still says Pending. The unchanged launcher and production setup pass fresh Defender scans with protection enabled, real installation/open/uninstall/reinstall, the real signed HTTPS VS60 download/current checks, all 32 installed file hashes and bounded installed game startup. Normal launcher-button interaction and a fresh friend-PC flow remain unverified after app-control denial. This scoped alpha acceptance preserves those limitations. The owner desktop retains its existing LAN shortcut and has a separate IRON SUN Launcher shortcut.
+
+**October 12, 2026 first-run report:** the owner reports that SmartScreen prevented `IRON-SUN-Setup (2).exe` from starting and displayed **Unknown publisher**. The downloaded copy matches the published setup hash and Windows reports it is unsigned. Defender detection removal does not supply an Authenticode signature or clear SmartScreen reputation. A normal, friend-friendly first run remains unaccepted. The owner chose to keep unsigned internal-alpha distribution and declined further costs. Paid signing and identity onboarding are deferred; the [publisher signing plan](AUTHENTICODE_PLAN.md) is a future reference.
 
 ## Players
 
@@ -14,7 +16,9 @@ Setup installs **IRON SUN Launcher** for the current Windows account, adds it to
 
 The launcher checks published updates when opened and every ten minutes while idle. Running games are never replaced. Both co-op players must use a compatible game build. Uninstall **IRON SUN Launcher** through Windows Installed Apps; game files and saves are retained. The setup shortcut is named `IRON SUN Launcher` and does not replace the owner's existing `IRON SUN` LAN shortcut.
 
-The first launcher is not Authenticode signed; Windows may show an unknown-publisher prompt. Releases and payloads are cryptographically verified against the embedded release key after initial download. Download only from the official page/release.
+The current setup and launcher are not Authenticode signed, and SmartScreen has blocked the owner's downloaded setup. Releases and payloads are cryptographically verified against the embedded release key after initial download; that verification does not give Windows a trusted publisher for the installer. Download only from the official page/release. Publisher signing and a protected first-run check are still required for the intended smooth friend installation.
+
+For the current unsigned alpha, if you trust the official source and choose to run it on your own PC, SmartScreen may offer **More info → Run anyway** for that file. This decision belongs to the player; it is not Microsoft certification. If that option is unavailable, stop and follow the PC's policy. Do not turn off Defender or SmartScreen, add antivirus exclusions, or install a root certificate to run the game. The [published release](https://github.com/Wilcox-Hub/iron-sun-releases/releases/latest) includes the exact setup SHA256 for comparison.
 
 ## Build
 
