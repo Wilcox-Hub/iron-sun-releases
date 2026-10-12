@@ -6,6 +6,7 @@ param(
  [string]$Repository='Wilcox-Hub/iron-sun-releases',
  [string]$ServerAlias='sidequest',
  [string]$ReleaseNotes='Private co-op server. Two weapon slots. Arena collision reliability.',
+ [string]$DeliveryApproval,
  [switch]$PrepareOnly,
  [switch]$GameOnly
 )
@@ -15,6 +16,16 @@ Add-Type -AssemblyName System.Security
 $sourceRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $gh='C:/Program Files/GitHub CLI/gh.exe'
 if($Repository -cne 'Wilcox-Hub/iron-sun-releases'){throw 'This publisher is scoped to the IRON SUN release repository.'}
+$setup=Join-Path $sourceRoot 'build/setup/IRON-SUN-Setup.exe'
+$delivery=$null
+if(!$GameOnly -and !$PrepareOnly){
+ if([string]::IsNullOrWhiteSpace($DeliveryApproval) -or !(Test-Path -LiteralPath $DeliveryApproval)){throw 'Launcher setup is withheld. Supply the recorded Microsoft review and protected setup acceptance before publishing.'}
+ $delivery=Get-Content -LiteralPath $DeliveryApproval -Raw|ConvertFrom-Json
+ if($delivery.schema_version -ne 1 -or $delivery.security_review_status -cne 'ACCEPTED' -or [string]::IsNullOrWhiteSpace($delivery.microsoft_submission_id) -or $delivery.protected_download_install_accepted -ne $true -or $delivery.launcher_opened -ne $true -or $delivery.game_install_play_accepted -ne $true -or $delivery.uninstall_accepted -ne $true){throw 'Production Windows setup delivery has not been accepted. Do not publish a fixture pass as real launcher acceptance.'}
+ foreach($item in @(@{path=$setup;hash=$delivery.setup_sha256},@{path=(Join-Path $sourceRoot 'build/IronSunLauncher.exe');hash=$delivery.launcher_sha256})){
+  if((Get-FileHash -LiteralPath $item.path -Algorithm SHA256).Hash -ine $item.hash){throw 'Delivery approval identifies different binaries.'}
+ }
+}
 $package=[IO.Path]::GetFullPath($PackageRoot)
 $info=Get-Content -LiteralPath (Join-Path $package 'PackageInfo.json') -Raw|ConvertFrom-Json
 if($info.Status -cne 'COMPLETE' -or $info.Configuration -cne 'Shipping'){throw 'Only a complete tested Shipping package may be published.'}
@@ -37,11 +48,11 @@ if($manifest.version -cne $version){throw 'Local feed does not identify this tes
 $game=Join-Path $LocalFeed $manifest.archive
 if((Get-Item -LiteralPath $game).Length -ne [long]$manifest.archive_size -or (Get-FileHash -LiteralPath $game -Algorithm SHA256).Hash -ne $manifest.archive_sha256){throw 'Game archive differs from the local verified feed.'}
 $launcher=Join-Path $sourceRoot 'build/IronSunLauncher.exe'
-if(!$GameOnly -and !(Test-Path -LiteralPath $launcher)){throw 'Build and test the launcher first.'}
+if(!$GameOnly -and (!(Test-Path -LiteralPath $launcher) -or !(Test-Path -LiteralPath $setup))){throw 'Build and test the launcher and Windows setup first. Do not restore quarantined files or bypass protection.'}
 # Preserve semantic version components; AssemblyFileVersion includes four parts.
 $launcherVersion=$null
 if(!$GameOnly){$parts=[Diagnostics.FileVersionInfo]::GetVersionInfo($launcher).FileVersion.Split('.');$launcherVersion=($parts[0..2]-join '.')}
-$tag='playtest-vs'+$Protocol+'-'+$version+$(if($GameOnly){'-game'}else{'-launcher-'+$launcherVersion})
+$tag='playtest-vs'+$Protocol+'-'+$version+$(if($GameOnly){'-game'}else{'-launcher-'+$launcherVersion+'-setup-1'})
 $output=Join-Path $sourceRoot ('build/releases/'+$tag)
 [IO.Directory]::CreateDirectory($output)|Out-Null
 $base='https://github.com/'+$Repository+'/releases/download/'+$tag+'/'
@@ -64,13 +75,15 @@ try {
  if(!$GameOnly){
   $launchManifest=[ordered]@{schema_version=1;app_id='IRON-SUN-LAUNCHER';version=$launcherVersion;url=($base+'IronSunLauncher.exe');size_bytes=(Get-Item -LiteralPath $launcher).Length;sha256=(Get-FileHash -LiteralPath $launcher -Algorithm SHA256).Hash}
   Write-Signed 'launcher-manifest' $launchManifest
+  $setupManifest=[ordered]@{schema_version=1;app_id='IRON-SUN-SETUP';version=$launcherVersion;filename='IRON-SUN-Setup.exe';url=($base+'IRON-SUN-Setup.exe');size_bytes=(Get-Item -LiteralPath $setup).Length;sha256=(Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash;security_review_status=$(if($delivery){'ACCEPTED'}else{'NOT_ACCEPTED'});delivery_verified=($null -ne $delivery)}
+  Write-Signed 'setup-manifest' $setupManifest
  }
 } finally {$rsa.Dispose()}
-$body="IRON SUN internal alpha / VS$Protocol`n`n$ReleaseNotes`n`nDownload IronSunLauncher.exe once. It installs the full game and checks signed updates automatically. The game server invite is shared privately by your host.`n`nWindows x64. Launcher $launcherVersion. First launcher has no commercial Authenticode certificate.`n`nThis is a tested internal prototype, not beta approval. Different-Wi-Fi human combat and recovery acceptance remain open."
+$body="IRON SUN internal alpha / VS$Protocol`n`n$ReleaseNotes`n`nDownload IRON-SUN-Setup.exe. Open it once, install IRON SUN Launcher, and leave Open IRON SUN Launcher selected. Setup adds a Start menu app and offers a desktop shortcut. In the launcher, choose Install IRON SUN, then Play. Future published game updates are automatic.`n`nAll other assets below are updater payloads and metadata; friends do not need to open them. The game server invite is shared privately by your host.`n`nWindows x64. Launcher $launcherVersion. First launcher has no commercial Authenticode certificate.`n`nThis is a tested internal prototype, not beta approval. Different-Wi-Fi human combat and recovery acceptance remain open."
 if($GameOnly){$body="IRON SUN internal alpha / VS$Protocol`n`n$ReleaseNotes`n`nTemporary manual game download. Extract the COMPLETE ZIP, then run Windows/TP_FirstPerson.exe. Do not move the EXE out of its folder. Updates are manual for this download.`n`nThe custom launcher is withheld because Windows Defender blocked it. Do not disable protection or add exclusions to install it. It will only return after security review and a successful normal download/install check.`n`nThe game server invite is shared privately by your host. This is an internal prototype, not beta approval; different-Wi-Fi human combat and recovery acceptance remain open."}
 $bodyPath=Join-Path $output 'release-notes.md';[IO.File]::WriteAllText($bodyPath,$body,[Text.UTF8Encoding]::new($false))
 $assets=@($game,(Join-Path $output 'game-manifest.json'),(Join-Path $output 'game-manifest.sig'))
-if(!$GameOnly){$assets+=@($launcher,(Join-Path $output 'launcher-manifest.json'),(Join-Path $output 'launcher-manifest.sig'))}
+if(!$GameOnly){$assets+=@($setup,(Join-Path $output 'setup-manifest.json'),(Join-Path $output 'setup-manifest.sig'),$launcher,(Join-Path $output 'launcher-manifest.json'),(Join-Path $output 'launcher-manifest.sig'))}
 $result=[ordered]@{prepared=$true;published=$false;mode=$(if($GameOnly){'manual-game-only'}else{'automatic-launcher'});repository=$Repository;tag=$tag;protocol=$Protocol;game_version=$version;launcher_version=$launcherVersion;assets=@($assets|ForEach-Object {@{name=(Split-Path $_ -Leaf);path=$_;size_bytes=(Get-Item -LiteralPath $_).Length;sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash}})}
 if(!$PrepareOnly){
  $existing=& $gh release view $tag --repo $Repository --json isDraft,tagName 2>$null
@@ -99,6 +112,10 @@ if(!$PrepareOnly){
  if($LASTEXITCODE -ne 0){throw 'Release promotion could not be confirmed.'}
  $result.published=$true
  $result.url='https://github.com/'+$Repository+'/releases/tag/'+$tag
+ if(!$GameOnly){
+  $feedResult=& (Join-Path $PSScriptRoot 'Publish-SetupFeed.ps1') -ManifestPath (Join-Path $output 'setup-manifest.json') -SignaturePath (Join-Path $output 'setup-manifest.sig') -Tag $tag
+  $result.website_setup_feed=($feedResult -join "`n")|ConvertFrom-Json
+ }
 }
 $result|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $output 'publication-result.json') -Encoding UTF8
 $result|ConvertTo-Json -Depth 8

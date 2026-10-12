@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "security_review_status": "NOT_ACCEPTED",
+  "microsoft_submission_id": "",
+  "setup_sha256": "",
+  "launcher_sha256": "",
+  "protected_download_install_accepted": false,
+  "launcher_opened": false,
+  "game_install_play_accepted": false,
+  "uninstall_accepted": false,
+  "evidence": [],
+  "note": "Template only. Record actual production binary hashes, Microsoft disposition and protected delivery evidence. Inert fixture tests are not production acceptance."
+}
