@@ -19,12 +19,9 @@ if($Repository -cne 'Wilcox-Hub/iron-sun-releases'){throw 'This publisher is sco
 $setup=Join-Path $sourceRoot 'build/setup/IRON-SUN-Setup.exe'
 $delivery=$null
 if(!$GameOnly -and !$PrepareOnly){
- if([string]::IsNullOrWhiteSpace($DeliveryApproval) -or !(Test-Path -LiteralPath $DeliveryApproval)){throw 'Launcher setup is withheld. Supply the recorded Microsoft review and protected setup acceptance before publishing.'}
- $delivery=Get-Content -LiteralPath $DeliveryApproval -Raw|ConvertFrom-Json
- if($delivery.schema_version -ne 1 -or $delivery.security_review_status -cne 'ACCEPTED' -or [string]::IsNullOrWhiteSpace($delivery.microsoft_submission_id) -or $delivery.protected_download_install_accepted -ne $true -or $delivery.launcher_opened -ne $true -or $delivery.game_install_play_accepted -ne $true -or $delivery.uninstall_accepted -ne $true){throw 'Production Windows setup delivery has not been accepted. Do not publish a fixture pass as real launcher acceptance.'}
- foreach($item in @(@{path=$setup;hash=$delivery.setup_sha256},@{path=(Join-Path $sourceRoot 'build/IronSunLauncher.exe');hash=$delivery.launcher_sha256})){
-  if((Get-FileHash -LiteralPath $item.path -Algorithm SHA256).Hash -ine $item.hash){throw 'Delivery approval identifies different binaries.'}
- }
+ if([string]::IsNullOrWhiteSpace($DeliveryApproval)){throw 'Supply the dated production delivery record before publishing.'}
+ . (Join-Path $PSScriptRoot 'Delivery-Policy.ps1')
+ $delivery=Get-VerifiedDeliveryApproval -ApprovalPath $DeliveryApproval -SetupPath $setup -LauncherPath (Join-Path $sourceRoot 'build/IronSunLauncher.exe')
 }
 $package=[IO.Path]::GetFullPath($PackageRoot)
 $info=Get-Content -LiteralPath (Join-Path $package 'PackageInfo.json') -Raw|ConvertFrom-Json
@@ -75,11 +72,14 @@ try {
  if(!$GameOnly){
   $launchManifest=[ordered]@{schema_version=1;app_id='IRON-SUN-LAUNCHER';version=$launcherVersion;url=($base+'IronSunLauncher.exe');size_bytes=(Get-Item -LiteralPath $launcher).Length;sha256=(Get-FileHash -LiteralPath $launcher -Algorithm SHA256).Hash}
   Write-Signed 'launcher-manifest' $launchManifest
-  $setupManifest=[ordered]@{schema_version=1;app_id='IRON-SUN-SETUP';version=$launcherVersion;filename='IRON-SUN-Setup.exe';url=($base+'IRON-SUN-Setup.exe');size_bytes=(Get-Item -LiteralPath $setup).Length;sha256=(Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash;security_review_status=$(if($delivery){'ACCEPTED'}else{'NOT_ACCEPTED'});delivery_verified=($null -ne $delivery)}
+  # ACCEPTED is this publisher's security acceptance, not a Microsoft case-completion claim.
+  # Preserve the analyst disposition and validation scope explicitly in signed metadata.
+  $setupManifest=[ordered]@{schema_version=1;app_id='IRON-SUN-SETUP';version=$launcherVersion;filename='IRON-SUN-Setup.exe';url=($base+'IRON-SUN-Setup.exe');size_bytes=(Get-Item -LiteralPath $setup).Length;sha256=(Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash;security_review_status=$(if($delivery){'ACCEPTED'}else{'NOT_ACCEPTED'});security_review_basis=$(if($delivery){$delivery.security_review_status}else{'NOT_ACCEPTED'});microsoft_submission_id=$(if($delivery){$delivery.microsoft_submission_id}else{''});delivery_verified=($null -ne $delivery);delivery_scope=$(if($delivery -and $delivery.PSObject.Properties['delivery_scope']){$delivery.delivery_scope}else{'FULL_FLOW'});normal_launcher_button_accepted=$(if($delivery){$delivery.game_install_play_accepted -eq $true}else{$false})}
   Write-Signed 'setup-manifest' $setupManifest
  }
 } finally {$rsa.Dispose()}
 $body="IRON SUN internal alpha / VS$Protocol`n`n$ReleaseNotes`n`nDownload IRON-SUN-Setup.exe. Open it once, install IRON SUN Launcher, and leave Open IRON SUN Launcher selected. Setup adds a Start menu app and offers a desktop shortcut. In the launcher, choose Install IRON SUN, then Play. Future published game updates are automatic.`n`nAll other assets below are updater payloads and metadata; friends do not need to open them. The game server invite is shared privately by your host.`n`nWindows x64. Launcher $launcherVersion. First launcher has no commercial Authenticode certificate.`n`nThis is a tested internal prototype, not beta approval. Different-Wi-Fi human combat and recovery acceptance remain open."
+if($delivery -and $delivery.PSObject.Properties['delivery_scope'] -and $delivery.delivery_scope -ceq 'INTERNAL_ALPHA_BACKEND_AND_STARTUP'){$body+="`n`nDelivery validation: the exact reviewed launcher and setup pass Defender scans with protection enabled; production install/open/uninstall, live signed updater download/current and installed Shipping startup pass. Normal launcher-button interaction and a fresh friend-PC flow remain unverified because app control denied access. Microsoft's analyst removed the detection; its portal final field still says Pending. This is scoped alpha delivery, not a claim of completed Microsoft certification or whole-game beta readiness."}
 if($GameOnly){$body="IRON SUN internal alpha / VS$Protocol`n`n$ReleaseNotes`n`nTemporary manual game download. Extract the COMPLETE ZIP, then run Windows/TP_FirstPerson.exe. Do not move the EXE out of its folder. Updates are manual for this download.`n`nThe custom launcher is withheld because Windows Defender blocked it. Do not disable protection or add exclusions to install it. It will only return after security review and a successful normal download/install check.`n`nThe game server invite is shared privately by your host. This is an internal prototype, not beta approval; different-Wi-Fi human combat and recovery acceptance remain open."}
 $bodyPath=Join-Path $output 'release-notes.md';[IO.File]::WriteAllText($bodyPath,$body,[Text.UTF8Encoding]::new($false))
 $assets=@($game,(Join-Path $output 'game-manifest.json'),(Join-Path $output 'game-manifest.sig'))
